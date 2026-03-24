@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
-import { fetchRandomFont, injectGoogleFont } from '../lib/font-api'
+import {
+  deleteFontById,
+  fetchRandomFont,
+  getFontProgress,
+  injectGoogleFont,
+} from '../lib/font-api'
 import { cn } from '../lib/utils'
 import type { Font } from '../types/font'
 
@@ -49,40 +54,6 @@ function isEditableTarget(target: EventTarget | null) {
     tag === 'TEXTAREA' ||
     tag === 'SELECT'
   )
-}
-
-function formatLabel(value: string) {
-  return value.replace(/[_-]/g, ' ')
-}
-
-function stringifyValue(value: unknown): string {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item)).join(', ')
-  }
-
-  if (value === null || value === undefined) {
-    return '—'
-  }
-
-  if (typeof value === 'object') {
-    return JSON.stringify(value)
-  }
-
-  const text = String(value).trim()
-  return text.length > 0 ? text : '—'
-}
-
-function toTagValues(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item)).filter(Boolean)
-  }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? [trimmed] : []
-  }
-
-  return []
 }
 
 interface EditableTextProps {
@@ -249,6 +220,7 @@ export function Explorer() {
   const [subtitleText, setSubtitleText] = useState(defaultSubtitle)
   const [mobilePanel, setMobilePanel] = useState<0 | 1>(0)
   const [panelDirection, setPanelDirection] = useState<1 | -1>(1)
+  const [deleting, setDeleting] = useState(false)
 
   const fetchedRef = useRef(false)
   const loadingRef = useRef(false)
@@ -256,21 +228,10 @@ export function Explorer() {
 
   const fontFamily = useMemo(() => getFontFamily(font), [font])
 
-  const metaEntries = useMemo(() => {
-    if (!font?.raw?.metadata) {
-      return []
-    }
-
-    return Object.entries(font.raw.metadata)
-  }, [font])
-
-  const tagEntries = useMemo(() => {
-    if (!font?.raw?.tags) {
-      return []
-    }
-
-    return Object.entries(font.raw.tags)
-  }, [font])
+  const progress = useMemo(
+    () => getFontProgress(font?.id ?? null),
+    [font],
+  )
 
   const requestNewFont = useCallback(async () => {
     if (loadingRef.current) {
@@ -301,6 +262,24 @@ export function Explorer() {
     setPanelDirection(nextPanel > mobilePanel ? 1 : -1)
     setMobilePanel(nextPanel)
   }, [mobilePanel])
+
+  const removeCurrentFont = useCallback(async () => {
+    if (!font || deleting || loading) {
+      return
+    }
+
+    setDeleting(true)
+    setFetchError(null)
+
+    try {
+      await deleteFontById(font.id)
+      await requestNewFont()
+    } catch {
+      setFetchError('Could not delete this font.')
+    } finally {
+      setDeleting(false)
+    }
+  }, [deleting, font, loading, requestNewFont])
 
   useEffect(() => {
     if (fetchedRef.current) {
@@ -390,54 +369,21 @@ export function Explorer() {
           <span className="text-[11px] text-zinc-400">space/tap shuffle · ← → switch</span>
         </div>
 
-        <div className="pointer-events-auto w-[min(52vw,680px)] max-h-[42vh] overflow-auto">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-zinc-400">
-                metadata
-              </p>
-              <div className="space-y-0.5 text-[11px] leading-5 text-zinc-600">
-                {metaEntries.map(([key, value]) => (
-                  <p key={`meta-${key}`}>
-                    <span className="text-zinc-400">{formatLabel(key)}:</span>{' '}
-                    {stringifyValue(value)}
-                  </p>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-zinc-400">
-                tags
-              </p>
-              <div className="space-y-2">
-                {tagEntries.map(([key, value]) => {
-                  const values = toTagValues(value)
-                  if (values.length === 0) {
-                    return null
-                  }
-
-                  return (
-                    <div key={`tag-${key}`}>
-                      <p className="mb-1 text-[10px] uppercase tracking-[0.14em] text-zinc-400">
-                        {formatLabel(key)}
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {values.map((tag) => (
-                          <span
-                            key={`${key}-${tag}`}
-                            className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-600"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
+        <div className="pointer-events-auto flex items-center gap-2 text-xs text-zinc-500 sm:gap-3">
+          <span>
+            {progress.position > 0
+              ? `font ${progress.position} / ${progress.total}`
+              : `fonts ${progress.total}`}
+          </span>
+          <span className="hidden sm:inline">id {font?.id ?? '—'}</span>
+          <button
+            type="button"
+            onClick={() => void removeCurrentFont()}
+            disabled={!font || deleting || loading}
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs transition enabled:hover:bg-zinc-100 disabled:opacity-40"
+          >
+            {deleting ? 'deleting…' : 'delete font'}
+          </button>
         </div>
       </header>
 
@@ -528,4 +474,3 @@ export function Explorer() {
     </div>
   )
 }
-

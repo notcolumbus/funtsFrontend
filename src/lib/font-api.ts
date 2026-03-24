@@ -153,7 +153,15 @@ function normalizeFont(payload: unknown): Font {
 
 async function fetchFontCatalog(signal?: AbortSignal): Promise<Font[]> {
   if (USE_TEST_FONTS) {
-    return TEST_FONTS
+    if (!cachedFonts) {
+      cachedFonts = [...TEST_FONTS]
+    }
+
+    if (cachedFonts.length === 0) {
+      throw new Error('No fonts available')
+    }
+
+    return cachedFonts
   }
 
   if (cachedFonts && cachedFonts.length > 0) {
@@ -205,6 +213,75 @@ export async function fetchRandomFont(signal?: AbortSignal): Promise<Font> {
 
   lastFontId = chosen.id
   return chosen
+}
+
+export function getFontProgress(fontId?: string | null) {
+  const total = cachedFonts?.length ?? 0
+  if (!fontId || !cachedFonts) {
+    return { position: 0, total }
+  }
+
+  const index = cachedFonts.findIndex((font) => font.id === fontId)
+  return {
+    position: index >= 0 ? index + 1 : 0,
+    total,
+  }
+}
+
+export async function deleteFontById(id: string) {
+  const normalizedId = String(id)
+
+  if (USE_TEST_FONTS) {
+    if (!cachedFonts) {
+      cachedFonts = [...TEST_FONTS]
+    }
+
+    const before = cachedFonts.length
+    cachedFonts = cachedFonts.filter((font) => font.id !== normalizedId)
+    const changes = before - cachedFonts.length
+    if (lastFontId === normalizedId) {
+      lastFontId = null
+    }
+
+    return {
+      deleted: changes > 0,
+      id: normalizedId,
+      changes,
+    }
+  }
+
+  const response = await fetch(
+    `${API_BASE}/api/fonts/${encodeURIComponent(normalizedId)}`,
+    { method: 'DELETE' },
+  )
+
+  if (response.status === 404) {
+    throw new Error('Font not found')
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to delete font (${response.status})`)
+  }
+
+  const payload = (await response.json()) as {
+    deleted?: boolean
+    id?: string
+    changes?: number
+  }
+
+  if (cachedFonts) {
+    cachedFonts = cachedFonts.filter((font) => font.id !== normalizedId)
+  }
+
+  if (lastFontId === normalizedId) {
+    lastFontId = null
+  }
+
+  return {
+    deleted: Boolean(payload.deleted),
+    id: String(payload.id ?? normalizedId),
+    changes: Number(payload.changes ?? 0),
+  }
 }
 
 export function injectGoogleFont(cssUrl: string) {
