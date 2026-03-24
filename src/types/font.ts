@@ -21,4 +21,8 @@ export interface Font {
     role: string
     pairs_well_with: string[]
   }
+  raw?: {
+    metadata: Record<string, unknown>
+    tags: Record<string, unknown>
+  }
 }

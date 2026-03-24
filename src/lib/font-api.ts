@@ -144,6 +144,10 @@ function normalizeFont(payload: unknown): Font {
         return fromPairing.length > 0 ? fromPairing : pairsFromRow
       })(),
     },
+    raw: {
+      metadata: meta,
+      tags,
+    },
   }
 }
 
