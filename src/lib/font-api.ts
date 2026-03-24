@@ -2,10 +2,14 @@ import type { Font } from '../types/font'
 import { TEST_FONTS } from './test-fonts'
 import { toSlug } from './utils'
 
-const API_BASE = 'https://api.funt.app'
+const API_BASE =
+  import.meta.env.VITE_FONTS_API_BASE ?? 'https://api.funts.amans.place'
 const USE_TEST_FONTS = import.meta.env.VITE_USE_TEST_FONTS === 'true'
 
 const loadedFontLinks = new Set<string>()
+let cachedFonts: Font[] | null = null
+let catalogPromise: Promise<Font[]> | null = null
+let lastFontId: string | null = null
 
 function asArray(values: unknown): string[] {
   if (!Array.isArray(values)) {
@@ -42,34 +46,92 @@ function asScore(value: unknown) {
   return 0
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+
+  return {}
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return value
+  }
+
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
+  }
+}
+
+function tagArray(source: Record<string, unknown>, key: string): string[] {
+  const value = source[key]
+  if (Array.isArray(value)) {
+    return asArray(value)
+  }
+
+  if (typeof value === 'string') {
+    return asArray(
+      value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    )
+  }
+
+  return []
+}
+
 function normalizeFont(payload: unknown): Font {
-  const root = (payload as Record<string, unknown>) ?? {}
-  const source = (root.font as Record<string, unknown> | undefined) ?? root
+  const row = asRecord(payload)
+  const fontJson = parseMaybeJson(row.font_json)
+  const source = asRecord(fontJson)
 
-  const meta = (source.meta as Record<string, unknown> | undefined) ?? {}
-  const technical =
-    (source.technical as Record<string, unknown> | undefined) ?? {}
-  const tags = (source.tags as Record<string, unknown> | undefined) ?? {}
-  const scores = (source.scores as Record<string, unknown> | undefined) ?? {}
-  const pairing = (source.pairing as Record<string, unknown> | undefined) ?? {}
+  const root = Object.keys(source).length > 0 ? source : row
+  const meta = asRecord(root.meta)
+  const technical = asRecord(root.technical)
+  const scores = asRecord(root.scores)
+  const pairing = asRecord(root.pairing)
+  const tagsFromFont = asRecord(root.tags)
+  const tagsFromRow = asRecord(parseMaybeJson(row.tags_json))
+  const tags = Object.keys(tagsFromFont).length > 0 ? tagsFromFont : tagsFromRow
 
-  const name = asText(source.name, 'Untitled Font')
+  const name = asText(row.name, asText(root.name, 'Untitled Font'))
   const fallbackId = toSlug(name) || 'untitled-font'
+  const id = asText(row.id, asText(root.id, asText(row.slug, fallbackId)))
+  const rawWeights = asArray(technical.weights)
+  const weights =
+    rawWeights.length > 0
+      ? rawWeights
+      : [asText(technical.weight_min), asText(technical.weight_max)].filter(
+          Boolean,
+        )
+  const pairsFromRow = asArray(parseMaybeJson(row.pair_font_ids_json))
 
   return {
-    id: asText(source.id, fallbackId),
+    id: asText(id, fallbackId),
     name,
     meta: {
-      google_css_url: asText(meta.google_css_url),
+      google_css_url: asText(
+        meta.google_css_url,
+        asText(row.google_css_url, asText(root.google_css_url)),
+      ),
       designer: asText(meta.designer, 'Unknown Designer'),
     },
     technical: {
       category: asText(technical.category, 'Uncategorized'),
-      weights: asArray(technical.weights),
+      weights,
     },
     tags: {
-      mood: asArray(tags.mood),
-      use_case: asArray(tags.use_case),
+      mood: tagArray(tags, 'mood'),
+      use_case: tagArray(tags, 'use_case'),
     },
     scores: {
       heading_score: asScore(scores.heading_score),
@@ -77,25 +139,68 @@ function normalizeFont(payload: unknown): Font {
     },
     pairing: {
       role: asText(pairing.role, 'Flexible'),
-      pairs_well_with: asArray(pairing.pairs_well_with),
+      pairs_well_with: (() => {
+        const fromPairing = asArray(pairing.pairs_well_with)
+        return fromPairing.length > 0 ? fromPairing : pairsFromRow
+      })(),
     },
   }
 }
 
-export async function fetchRandomFont(signal?: AbortSignal): Promise<Font> {
+async function fetchFontCatalog(signal?: AbortSignal): Promise<Font[]> {
   if (USE_TEST_FONTS) {
-    const randomIndex = Math.floor(Math.random() * TEST_FONTS.length)
-    return TEST_FONTS[randomIndex]
+    return TEST_FONTS
   }
 
-  const response = await fetch(`${API_BASE}/shuffle`, { signal })
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch font (${response.status})`)
+  if (cachedFonts && cachedFonts.length > 0) {
+    return cachedFonts
   }
 
-  const payload = (await response.json()) as unknown
-  return normalizeFont(payload)
+  if (!catalogPromise) {
+    catalogPromise = (async () => {
+      const response = await fetch(`${API_BASE}/api/fonts`, { signal })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch fonts (${response.status})`)
+      }
+
+      const payload = (await response.json()) as { fonts?: unknown[] }
+      const rows = Array.isArray(payload.fonts) ? payload.fonts : []
+      const normalized = rows.map((item) => normalizeFont(item))
+      const valid = normalized.filter((item) => item.name && item.id)
+
+      if (valid.length === 0) {
+        throw new Error('No fonts returned from API')
+      }
+
+      cachedFonts = valid
+      return valid
+    })().finally(() => {
+      catalogPromise = null
+    })
+  }
+
+  return catalogPromise
+}
+
+export async function fetchRandomFont(signal?: AbortSignal): Promise<Font> {
+  const fonts = await fetchFontCatalog(signal)
+  if (fonts.length === 1) {
+    lastFontId = fonts[0].id
+    return fonts[0]
+  }
+
+  let chosen = fonts[Math.floor(Math.random() * fonts.length)]
+  if (chosen.id === lastFontId) {
+    let tries = 0
+    while (chosen.id === lastFontId && tries < 6) {
+      chosen = fonts[Math.floor(Math.random() * fonts.length)]
+      tries += 1
+    }
+  }
+
+  lastFontId = chosen.id
+  return chosen
 }
 
 export function injectGoogleFont(cssUrl: string) {
