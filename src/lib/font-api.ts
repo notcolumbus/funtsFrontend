@@ -9,7 +9,7 @@ const USE_TEST_FONTS = import.meta.env.VITE_USE_TEST_FONTS === 'true'
 const loadedFontLinks = new Set<string>()
 let cachedFonts: Font[] | null = null
 let catalogPromise: Promise<Font[]> | null = null
-let lastFontId: string | null = null
+let currentIndex = -1
 
 function asArray(values: unknown): string[] {
   if (!Array.isArray(values)) {
@@ -195,24 +195,57 @@ async function fetchFontCatalog(signal?: AbortSignal): Promise<Font[]> {
   return catalogPromise
 }
 
-export async function fetchRandomFont(signal?: AbortSignal): Promise<Font> {
+function adjustIndexAfterRemove(removedIndex: number) {
+  if (!cachedFonts || cachedFonts.length === 0) {
+    currentIndex = -1
+  } else if (removedIndex >= 0 && removedIndex < currentIndex) {
+    currentIndex -= 1
+  } else if (currentIndex >= cachedFonts.length) {
+    currentIndex = 0
+  }
+}
+
+export async function fetchCurrentFont(signal?: AbortSignal): Promise<Font> {
   const fonts = await fetchFontCatalog(signal)
-  if (fonts.length === 1) {
-    lastFontId = fonts[0].id
-    return fonts[0]
+  if (fonts.length === 0) {
+    throw new Error('No fonts available')
   }
 
-  let chosen = fonts[Math.floor(Math.random() * fonts.length)]
-  if (chosen.id === lastFontId) {
-    let tries = 0
-    while (chosen.id === lastFontId && tries < 6) {
-      chosen = fonts[Math.floor(Math.random() * fonts.length)]
-      tries += 1
-    }
+  if (currentIndex < 0 || currentIndex >= fonts.length) {
+    currentIndex = 0
   }
 
-  lastFontId = chosen.id
-  return chosen
+  return fonts[currentIndex]
+}
+
+export async function fetchNextFont(signal?: AbortSignal): Promise<Font> {
+  const fonts = await fetchFontCatalog(signal)
+  if (fonts.length === 0) {
+    throw new Error('No fonts available')
+  }
+
+  if (currentIndex < 0) {
+    currentIndex = 0
+  } else {
+    currentIndex = (currentIndex + 1) % fonts.length
+  }
+
+  return fonts[currentIndex]
+}
+
+export async function fetchPreviousFont(signal?: AbortSignal): Promise<Font> {
+  const fonts = await fetchFontCatalog(signal)
+  if (fonts.length === 0) {
+    throw new Error('No fonts available')
+  }
+
+  if (currentIndex < 0) {
+    currentIndex = 0
+  } else {
+    currentIndex = (currentIndex - 1 + fonts.length) % fonts.length
+  }
+
+  return fonts[currentIndex]
 }
 
 export function getFontProgress(fontId?: string | null) {
@@ -236,17 +269,17 @@ export async function deleteFontById(id: string) {
       cachedFonts = [...TEST_FONTS]
     }
 
-    const before = cachedFonts.length
-    cachedFonts = cachedFonts.filter((font) => font.id !== normalizedId)
-    const changes = before - cachedFonts.length
-    if (lastFontId === normalizedId) {
-      lastFontId = null
+    const removedIndex = cachedFonts.findIndex((font) => font.id === normalizedId)
+    if (removedIndex >= 0) {
+      cachedFonts.splice(removedIndex, 1)
     }
 
+    adjustIndexAfterRemove(removedIndex)
+
     return {
-      deleted: changes > 0,
+      deleted: removedIndex >= 0,
       id: normalizedId,
-      changes,
+      changes: removedIndex >= 0 ? 1 : 0,
     }
   }
 
@@ -263,24 +296,23 @@ export async function deleteFontById(id: string) {
     throw new Error(`Failed to delete font (${response.status})`)
   }
 
-  const payload = (await response.json()) as {
-    deleted?: boolean
-    id?: string
-    changes?: number
+  let payload: Record<string, unknown> = {}
+  try {
+    payload = (await response.json()) as Record<string, unknown>
+  } catch {
+    // non-JSON response is OK
   }
 
   if (cachedFonts) {
+    const removedIndex = cachedFonts.findIndex((font) => font.id === normalizedId)
     cachedFonts = cachedFonts.filter((font) => font.id !== normalizedId)
-  }
-
-  if (lastFontId === normalizedId) {
-    lastFontId = null
+    adjustIndexAfterRemove(removedIndex)
   }
 
   return {
-    deleted: Boolean(payload.deleted),
-    id: String(payload.id ?? normalizedId),
-    changes: Number(payload.changes ?? 0),
+    deleted: true,
+    id: normalizedId,
+    changes: Number(payload.changes ?? 1),
   }
 }
 
@@ -304,8 +336,4 @@ export function injectGoogleFont(cssUrl: string) {
   link.dataset.funtGoogleFont = 'true'
   document.head.append(link)
   loadedFontLinks.add(cleanUrl)
-}
-
-export function getFontInstallCommand(font: Font) {
-  return `npx kern add ${font.id}`
 }

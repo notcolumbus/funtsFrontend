@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 import {
   deleteFontById,
-  fetchRandomFont,
+  fetchCurrentFont,
+  fetchNextFont,
+  fetchPreviousFont,
   getFontProgress,
   injectGoogleFont,
 } from '../lib/font-api'
-import { cn } from '../lib/utils'
 import type { Font } from '../types/font'
 
 const defaultSubtitle =
@@ -19,457 +20,185 @@ const fontSwapVariants = {
   exit: { opacity: 0, y: 8, filter: 'blur(6px)' },
 }
 
-const panelSlideVariants = {
-  initial: (direction: 1 | -1) => ({
-    opacity: 0,
-    x: direction > 0 ? 30 : -30,
-  }),
-  animate: {
-    opacity: 1,
-    x: 0,
-  },
-  exit: (direction: 1 | -1) => ({
-    opacity: 0,
-    x: direction > 0 ? -30 : 30,
-  }),
-}
-
 function getFontFamily(font: Font | null) {
-  if (!font) {
-    return `'Sora', 'Avenir Next', 'Segoe UI', sans-serif`
-  }
-
-  return `"${font.name}", 'Sora', 'Avenir Next', 'Segoe UI', sans-serif`
+  return font
+    ? `"${font.name}", 'Sora', sans-serif`
+    : `'Sora', sans-serif`
 }
 
-function isEditableTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
-
-  const tag = target.tagName
-  return (
-    target.isContentEditable ||
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT'
-  )
-}
-
-interface EditableTextProps {
-  value: string
-  onChange: (value: string) => void
-  className?: string
-  multiline?: boolean
-}
-
-function EditableText({
-  value,
-  onChange,
-  className,
-  multiline = false,
-}: EditableTextProps) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
-
-  const startEditing = () => {
-    setDraft(value)
-    setEditing(true)
-  }
-
-  if (editing) {
-    if (multiline) {
-      return (
-        <textarea
-          autoFocus
-          rows={4}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={() => {
-            const next = draft.trim()
-            if (next) {
-              onChange(next)
-            }
-            setEditing(false)
-          }}
-          className={cn(
-            'w-full resize-none bg-transparent text-center outline-none',
-            className,
-          )}
-        />
-      )
-    }
-
-    return (
-      <input
-        autoFocus
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => {
-          const next = draft.trim()
-          if (next) {
-            onChange(next)
-          }
-          setEditing(false)
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            const next = draft.trim()
-            if (next) {
-              onChange(next)
-            }
-            setEditing(false)
-          }
-        }}
-        className={cn('w-full bg-transparent text-center outline-none', className)}
-      />
-    )
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={startEditing}
-      className={cn('w-full cursor-text text-center', className)}
-    >
-      {value}
-    </button>
-  )
-}
-
-function SpecimenPanel({
-  font,
-  fontFamily,
-  loading,
-  titleText,
-  subtitleText,
-  setTitleText,
-  setSubtitleText,
-}: {
-  font: Font | null
-  fontFamily: string
-  loading: boolean
-  titleText: string
-  subtitleText: string
-  setTitleText: (value: string) => void
-  setSubtitleText: (value: string) => void
-}) {
-  return (
-    <div className="flex h-full items-center justify-center px-5" style={{ fontFamily }}>
-      <div className="w-full max-w-3xl text-center">
-        {loading && !font ? (
-          <div className="flex items-center justify-center">
-            <Loader2 className="h-5 w-5 animate-spin text-zinc-500" />
-          </div>
-        ) : (
-          <>
-            <EditableText
-              value={titleText || font?.name || 'Font'}
-              onChange={setTitleText}
-              className="text-5xl font-semibold tracking-tight sm:text-7xl lg:text-8xl"
-            />
-            <div className="mx-auto mt-4 max-w-2xl">
-              <EditableText
-                value={subtitleText}
-                onChange={setSubtitleText}
-                multiline
-                className="text-sm leading-7 text-zinc-600 sm:text-base"
-              />
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ElementsPanel({ fontFamily }: { fontFamily: string }) {
-  return (
-    <div
-      className="flex h-full items-center justify-center px-8 text-zinc-700"
-      style={{ fontFamily }}
-    >
-      <div className="w-full max-w-sm space-y-6">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-zinc-400">
-          elements
-        </p>
-        <button className="rounded-full border border-zinc-300 px-4 py-1.5 text-sm">
-          Primary Action
-        </button>
-        <input
-          className="w-full border-b border-zinc-300 bg-transparent py-2 text-sm outline-none"
-          placeholder="Input element"
-          readOnly
-        />
-        <p className="text-xs uppercase tracking-[0.16em] text-zinc-500">
-          Navigation · Dashboard · Settings
-        </p>
-        <p className="text-xs text-zinc-500">1234567890</p>
-      </div>
-    </div>
-  )
+function isEditable(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
 }
 
 export function Explorer() {
   const [font, setFont] = useState<Font | null>(null)
   const [loading, setLoading] = useState(false)
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const [fontMotionIndex, setFontMotionIndex] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const [motionKey, setMotionKey] = useState(0)
   const [titleText, setTitleText] = useState('')
   const [subtitleText, setSubtitleText] = useState(defaultSubtitle)
-  const [mobilePanel, setMobilePanel] = useState<0 | 1>(0)
-  const [panelDirection, setPanelDirection] = useState<1 | -1>(1)
   const [deleting, setDeleting] = useState(false)
 
   const fetchedRef = useRef(false)
-  const loadingRef = useRef(false)
-  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null)
+  const busyRef = useRef(false)
 
   const fontFamily = useMemo(() => getFontFamily(font), [font])
+  const progress = useMemo(() => getFontProgress(font?.id ?? null), [font])
 
-  const progress = useMemo(
-    () => getFontProgress(font?.id ?? null),
-    [font],
-  )
-
-  const requestNewFont = useCallback(async () => {
-    if (loadingRef.current) {
-      return
-    }
-
-    loadingRef.current = true
-    setLoading(true)
-    setFetchError(null)
-
-    try {
-      const next = await fetchRandomFont()
-      setFont(next)
-      setTitleText(next.name)
-      if (next.meta.google_css_url) {
-        injectGoogleFont(next.meta.google_css_url)
-      }
-      setFontMotionIndex((prev) => prev + 1)
-    } catch {
-      setFetchError('Could not load a font. Press Space to retry.')
-    } finally {
-      loadingRef.current = false
-      setLoading(false)
-    }
+  const applyFont = useCallback((next: Font) => {
+    setFont(next)
+    setTitleText(next.name)
+    if (next.meta.google_css_url) injectGoogleFont(next.meta.google_css_url)
+    setMotionKey((k) => k + 1)
   }, [])
 
-  const setPanel = useCallback((nextPanel: 0 | 1) => {
-    setPanelDirection(nextPanel > mobilePanel ? 1 : -1)
-    setMobilePanel(nextPanel)
-  }, [mobilePanel])
-
-  const removeCurrentFont = useCallback(async () => {
-    if (!font || deleting || loading) {
-      return
+  const navigate = useCallback(async (fetchFn: () => Promise<Font>, errorMsg: string) => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setLoading(true)
+    setError(null)
+    try {
+      applyFont(await fetchFn())
+    } catch {
+      setError(errorMsg)
+    } finally {
+      busyRef.current = false
+      setLoading(false)
     }
+  }, [applyFont])
 
+  const goNext = useCallback(() => navigate(fetchNextFont, 'Could not load font.'), [navigate])
+  const goPrev = useCallback(() => navigate(fetchPreviousFont, 'Could not go back.'), [navigate])
+
+  const deleteCurrent = useCallback(async () => {
+    if (!font || busyRef.current) return
+    busyRef.current = true
     setDeleting(true)
-    setFetchError(null)
-
+    setError(null)
     try {
       await deleteFontById(font.id)
-      await requestNewFont()
-    } catch {
-      setFetchError('Could not delete this font.')
+      applyFont(await fetchCurrentFont())
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : ''
+      setError(msg.toLowerCase().includes('no fonts') ? 'No fonts left.' : 'Delete failed.')
+      if (msg.toLowerCase().includes('no fonts')) setFont(null)
     } finally {
+      busyRef.current = false
       setDeleting(false)
     }
-  }, [deleting, font, loading, requestNewFont])
+  }, [applyFont, font])
 
   useEffect(() => {
-    if (fetchedRef.current) {
-      return
-    }
-
+    if (fetchedRef.current) return
     fetchedRef.current = true
-    void requestNewFont()
-  }, [requestNewFont])
+    void goNext()
+  }, [goNext])
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) {
-        return
-      }
-
-      if (event.code === 'Space' || event.key === 'ArrowDown') {
-        event.preventDefault()
-        void requestNewFont()
-        return
-      }
-
-      if (event.key === 'ArrowRight') {
-        event.preventDefault()
-        setPanel(1)
-        return
-      }
-
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault()
-        setPanel(0)
+    const onKey = (e: KeyboardEvent) => {
+      if (isEditable(e.target)) return
+      if (e.code === 'Space' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        void goNext()
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        void goPrev()
       }
     }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [goNext, goPrev])
 
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [requestNewFont, setPanel])
-
-  const onTouchStart = (event: TouchEvent<HTMLDivElement>) => {
-    if (event.touches.length !== 1) {
-      touchStartRef.current = null
-      return
-    }
-
-    const touch = event.touches[0]
-    touchStartRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      time: Date.now(),
-    }
-  }
-
-  const onTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
-    if (!touchStartRef.current || isEditableTarget(event.target)) {
-      return
-    }
-
-    const start = touchStartRef.current
-    touchStartRef.current = null
-
-    const touch = event.changedTouches[0]
-    const dx = touch.clientX - start.x
-    const dy = touch.clientY - start.y
-    const elapsed = Date.now() - start.time
-    const absX = Math.abs(dx)
-    const absY = Math.abs(dy)
-
-    if (absX < 10 && absY < 10 && elapsed < 280) {
-      void requestNewFont()
-      return
-    }
-
-    if (absX > absY && absX > 40) {
-      setPanel(dx < 0 ? 1 : 0)
-    }
-  }
+  const stop = (e: React.MouseEvent) => e.stopPropagation()
 
   return (
-    <div
-      className="relative min-h-screen overflow-hidden bg-[#f7f6f3] text-zinc-900"
-      onTouchStart={onTouchStart}
-      onTouchEnd={onTouchEnd}
-    >
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-4 px-4 pb-2 pt-4 sm:px-6">
-        <div className="pointer-events-auto flex flex-col">
+    <div className="relative flex min-h-screen flex-col bg-[#f7f6f3] text-zinc-900">
+      <header className="flex items-start justify-between px-4 pb-2 pt-4 sm:px-6">
+        <div>
           <span className="font-mono text-sm text-zinc-600">funts.app</span>
-          <span className="text-[11px] text-zinc-400">space/tap shuffle · ← → switch</span>
+          <p className="text-[11px] text-zinc-400">space / tap next · ↑↓ browse</p>
         </div>
-
-        <div className="pointer-events-auto flex items-center gap-2 text-xs text-zinc-500 sm:gap-3">
+        <div className="flex items-center gap-2 text-xs text-zinc-500">
           <span>
             {progress.position > 0
-              ? `font ${progress.position} / ${progress.total}`
-              : `fonts ${progress.total}`}
+              ? `${progress.position} / ${progress.total}`
+              : `${progress.total} fonts`}
           </span>
-          <span className="hidden sm:inline">id {font?.id ?? '—'}</span>
           <button
             type="button"
-            onClick={() => void removeCurrentFont()}
-            disabled={!font || deleting || loading}
-            className="rounded-full border border-zinc-300 px-3 py-1 text-xs transition enabled:hover:bg-zinc-100 disabled:opacity-40"
+            onClick={() => void goPrev()}
+            disabled={deleting || loading}
+            className="rounded-full border border-zinc-300 px-3 py-1 transition enabled:hover:bg-zinc-100 disabled:opacity-40"
           >
-            {deleting ? 'deleting…' : 'delete font'}
+            back
+          </button>
+          <button
+            type="button"
+            onClick={() => void goNext()}
+            disabled={deleting || loading}
+            className="rounded-full border border-zinc-300 px-3 py-1 transition enabled:hover:bg-zinc-100 disabled:opacity-40"
+          >
+            next
+          </button>
+          <button
+            type="button"
+            onClick={() => void deleteCurrent()}
+            disabled={!font || deleting || loading}
+            className="rounded-full border border-zinc-300 px-3 py-1 transition enabled:hover:bg-zinc-100 disabled:opacity-40"
+          >
+            {deleting ? 'deleting…' : 'delete'}
           </button>
         </div>
       </header>
 
-      <main className="min-h-screen pt-20 lg:pt-8">
-        <div className="h-[calc(100vh-9rem)] lg:hidden">
-          <AnimatePresence custom={panelDirection} initial={false} mode="wait">
-            <motion.div
-              key={`mobile-panel-${mobilePanel}`}
-              custom={panelDirection}
-              variants={panelSlideVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              transition={{ duration: 0.14, ease: 'easeOut' }}
-              className="h-full"
-            >
-              {mobilePanel === 0 ? (
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={`${font?.id ?? 'loading'}-${fontMotionIndex}`}
-                    variants={fontSwapVariants}
-                    initial="initial"
-                    animate="animate"
-                    exit="exit"
-                    transition={{ duration: 0.14, ease: 'easeOut' }}
-                    className="h-full"
-                  >
-                    <SpecimenPanel
-                      font={font}
-                      fontFamily={fontFamily}
-                      loading={loading}
-                      titleText={titleText}
-                      subtitleText={subtitleText}
-                      setTitleText={setTitleText}
-                      setSubtitleText={setSubtitleText}
-                    />
-                  </motion.div>
-                </AnimatePresence>
-              ) : (
-                <ElementsPanel fontFamily={fontFamily} />
-              )}
-            </motion.div>
-          </AnimatePresence>
-        </div>
-
-        <div className="hidden h-[calc(100vh-7.5rem)] lg:grid lg:grid-cols-[1fr_320px]">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={`${font?.id ?? 'loading'}-${fontMotionIndex}`}
-              variants={fontSwapVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              transition={{ duration: 0.14, ease: 'easeOut' }}
-              className="h-full"
-            >
-              <SpecimenPanel
-                font={font}
-                fontFamily={fontFamily}
-                loading={loading}
-                titleText={titleText}
-                subtitleText={subtitleText}
-                setTitleText={setTitleText}
-                setSubtitleText={setSubtitleText}
-              />
-            </motion.div>
-          </AnimatePresence>
-          <div className="border-l border-zinc-200/70">
-            <ElementsPanel fontFamily={fontFamily} />
-          </div>
-        </div>
+      <main
+        className="flex flex-1 items-center justify-center px-5"
+        onClick={() => void goNext()}
+      >
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={motionKey}
+            variants={fontSwapVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            transition={{ duration: 0.14, ease: 'easeOut' }}
+            className="w-full max-w-3xl text-center"
+            style={{ fontFamily }}
+          >
+            {loading && !font ? (
+              <Loader2 className="mx-auto h-5 w-5 animate-spin text-zinc-400" />
+            ) : (
+              <>
+                <input
+                  value={titleText || font?.name || ''}
+                  onChange={(e) => setTitleText(e.target.value)}
+                  onClick={stop}
+                  className="w-full bg-transparent text-center text-5xl font-semibold tracking-tight outline-none sm:text-7xl lg:text-8xl"
+                />
+                <textarea
+                  value={subtitleText}
+                  onChange={(e) => setSubtitleText(e.target.value)}
+                  onClick={stop}
+                  rows={3}
+                  className="mt-4 w-full resize-none bg-transparent text-center text-sm leading-7 text-zinc-600 outline-none sm:text-base"
+                />
+              </>
+            )}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
-      {fetchError ? (
-        <p className="pointer-events-none absolute bottom-12 left-1/2 -translate-x-1/2 text-xs text-red-600">
-          {fetchError}
-        </p>
-      ) : null}
+      {error && (
+        <p className="absolute bottom-12 left-1/2 -translate-x-1/2 text-xs text-red-600">{error}</p>
+      )}
 
-      <footer className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between px-4 pb-4 text-sm sm:px-6">
-        <p className="pointer-events-auto text-zinc-700" style={{ fontFamily }}>
-          {font?.name ?? 'Loading font...'}
+      <footer className="flex items-end justify-between px-4 pb-4 text-sm sm:px-6">
+        <p className="text-zinc-700" style={{ fontFamily }}>
+          {font?.name ?? '…'}
         </p>
-        <p className="pointer-events-auto text-zinc-500">
-          {font?.meta.designer || 'Unknown Designer'}
-        </p>
+        <p className="text-zinc-500">{font?.meta.designer || ''}</p>
       </footer>
     </div>
   )
